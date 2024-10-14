@@ -67,10 +67,16 @@ typedef struct _SysInfo {
     char friendcodeseed[16 + 1];
     char movablekeyy[32 + 1];
     char nand_id0[32 + 1];
-    // from emmc
+    // from SD/MMC
     char nand_cid[32 + 1];
     char sd_cid[32 + 1];
     char nand_id1[32 + 1];
+    char sd_manunfacturer[64 + 1];
+    char sd_name[5 + 1];
+    char sd_oemid[12 + 1];
+    char sd_revision[12 + 1];
+    char sd_serial[10 + 1];
+    char sd_date[10 + 1];
     // From twln:
     char assembly_date[19 + 1];
     char original_firmware[15 + 1];
@@ -299,15 +305,84 @@ void GetSysInfo_SDMMC(SysInfo* info, char nand_drive) {
     u8 nand_cid[16] = { 0 };
     u8 sd_cid[16] = { 0 };
 
+    u8 manfid     = 0x00;
+    char oemid[2] = "";
+    char name[5]  = "";
+    u8 hwrev      = 0;
+    u8 fwrev      = 0;
+    u32 serial    = 0x00000000;
+    u16 date_yr   = 0;
+    u8 date_mon   = 0;
+
     strncpy(info->nand_cid, "<unknown>", countof("<unknown>"));
     strncpy(info->sd_cid, "<unknown>", countof("<unknown>"));
     strncpy(info->nand_id1, "<unknown>", countof("<unknown>"));
 
+    // NAND CID (raw)
     sdmmc_get_cid(1, (u32*) (void*) nand_cid);
     snprintf(info->nand_cid, 32 + 1, "%016llX%016llX", getbe64(nand_cid), getbe64(nand_cid+8));
 
+    // SD CID (raw)
     sdmmc_get_cid(0, (u32*) (void*) sd_cid);
     snprintf(info->sd_cid, 32 + 1, "%016llX%016llX", getbe64(sd_cid), getbe64(sd_cid+8));
+
+    // SD CID (decoded)
+    // The raw CID has been delivered to us in reverse byte order. Except for the last byte. That's probably still supposed to be the CRC7 but, whatever.
+    manfid = sd_cid[14];
+    // memcpy(oemid, sd_cid+1, 2);
+    for (int i = 0; i < 2; i++)
+        oemid[i] = (sd_cid[13-i] < 0x20 || sd_cid[13-i] == 0xFF ? '?' : sd_cid[13-i]);
+    // memcpy(name, sd_cid+3, 5);
+    for (int i = 0; i < 5; i++)
+        name[i] = (sd_cid[11-i] < 0x20 || sd_cid[11-i] == 0xFF ? '?' : sd_cid[11-i]);
+    hwrev = (sd_cid[6] >> 4) & 0xF;
+    fwrev = sd_cid[6] & 0xF;
+    serial = getle32(sd_cid+2);
+    date_yr = ((getle16(sd_cid+0) >> 4) & 0xFF) + 2000;
+    date_mon = getle16(sd_cid+0) & 0xF;
+
+    const char* sd_manunfacturer = "<unknown>";
+
+    // I need a better source of manufacturer IDs than the one in hekate-ipl. Not that it's bad.
+    switch (manfid) {
+        case 0x00: sd_manunfacturer = "FAKE!!"; break;
+        case 0x01: sd_manunfacturer = "Panasonic"; break;
+        case 0x02: sd_manunfacturer = "Toshiba"; break;
+        case 0x03: sd_manunfacturer = (getbe16(oemid) == 0x5744 /* WD */ ? "Western Digital" : "SanDisk"); break;
+        case 0x05: sd_manunfacturer = "Fake?"; break;
+        case 0x06: sd_manunfacturer = "Ritek"; break;
+        case 0x09: sd_manunfacturer = "ATP"; break;
+        case 0x13: sd_manunfacturer = "Kingmax"; break;
+        case 0x19: sd_manunfacturer = "Dynacard"; break;
+        case 0x1A: sd_manunfacturer = "Power Quotient"; break;
+        case 0x1B: sd_manunfacturer = "Samsung"; break;
+        case 0x1D: sd_manunfacturer = "AData"; break;
+        case 0x27: sd_manunfacturer = "Phison"; break;
+        case 0x28: sd_manunfacturer = "Barun Electronics/Lexar"; break;
+        case 0x31: sd_manunfacturer = "Silicon Power"; break;
+        case 0x41: sd_manunfacturer = "Kingston"; break;
+        case 0x51: sd_manunfacturer = "STEC"; break;
+        case 0x61: sd_manunfacturer = "Netlist"; break;
+        case 0x63: sd_manunfacturer = "Cactus"; break;
+        case 0x73: sd_manunfacturer = "Bongiovi"; break;
+        case 0x74: sd_manunfacturer = "Transcend(?)"; break;
+        case 0x76: sd_manunfacturer = "PNY(?)"; break;
+        case 0x82: sd_manunfacturer = "Jiang Tay"; break;
+        case 0x83: sd_manunfacturer = "Netcom"; break;
+        case 0x84: sd_manunfacturer = "Strontium"; break;
+        case 0x9C: sd_manunfacturer = (getbe16(oemid) == 0x534F /* SO */ ? "Sony" : "Barun Electronics/Lexar"); break;
+        case 0x9F: sd_manunfacturer = "Taishin"; break;
+        case 0xAD: sd_manunfacturer = "Longsys"; break;
+    }
+
+    snprintf(info->sd_manunfacturer, 64 + 1, "%s (0x%02X)", sd_manunfacturer, manfid);
+    snprintf(info->sd_name, 5 + 1, "%.5s", name);
+    snprintf(info->sd_oemid, 12 + 1, "%.2s (0x%04X)", oemid, getbe16(oemid));
+    snprintf(info->sd_revision, 12 + 1, "%u.%u (0x%02X)", hwrev, fwrev, sd_cid[6]);
+    snprintf(info->sd_serial, 10 + 1, "0x%08lX", serial);
+    snprintf(info->sd_date, 10+1, "%02u/%04u", date_mon, date_yr);
+
+    // NAND (SD?) ID1
     snprintf(info->nand_id1, 32 + 1, "%08lX%08lX%08lX%08lX",
         getle32(sd_cid+0), getle32(sd_cid+4), getle32(sd_cid+8), getle32(sd_cid+12));
 }
@@ -571,7 +646,7 @@ void GetSysInfo_TWLN(SysInfo* info, char nand_drive) {
     }
 }
 
-
+// += sprintf() ...
 void MeowSprintf(char** text, const char* format, ...)
 {
     char buffer[256];
@@ -609,4 +684,11 @@ void MyriaSysinfo(char* sysinfo_txt) {
     MeowSprintf(meow, STR_SYSINFO_SD_CID, info.sd_cid);
     MeowSprintf(meow, STR_SYSINFO_SYSTEM_ID0, info.nand_id0);
     MeowSprintf(meow, STR_SYSINFO_SYSTEM_ID1, info.nand_id1);
+    MeowSprintf(meow, "\r\n");
+    MeowSprintf(meow, "SD Manufacturer: %s\r\n", info.sd_manunfacturer);
+    MeowSprintf(meow, "SD OEM ID: %s\r\n", info.sd_oemid);
+    MeowSprintf(meow, "SD Product name: %s\r\n", info.sd_name);
+    MeowSprintf(meow, "SD Revision: %s\r\n", info.sd_revision);
+    MeowSprintf(meow, "SD Manufacturing date: %s\r\n", info.sd_date);
+    MeowSprintf(meow, "SD Serial number: %s\r\n", info.sd_serial);
 }
